@@ -7,11 +7,26 @@
 #endif 
 
 #include <windows.h>
-//#include <wmp.h>
+#include <gdiplus.h>
+// #include <wmp.h>
+// #include <comdef.h>
+#include <wchar.h>
+#include <filesystem>
+#include <string>
+//using namespace Gdiplus;
+
+
 //#include <mmsystem.h>
 //#include <digitalv.h>
 
 //#pragma comment(lib, "winmm.lib")
+
+// 后期版本会放入类的内容
+ULONG_PTR g_gdiplusToken; // GDI+的token
+HWND hwnd;
+Gdiplus::Image* g_pBackgroundImage;
+// IWMPPlayer* pPlayer = NULL;
+// IWMPControls* pControls = NULL;
 
 
 // 各种向前声明
@@ -21,6 +36,9 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 // 主程序
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow){
 
+    // 初始化COM库
+    CoInitialize(NULL);
+
     // 注册窗口类
     const wchar_t CLASS_NAME[]  = L"Sample Window Class";
     WNDCLASS wc = { };
@@ -29,27 +47,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     wc.lpszClassName = CLASS_NAME;
     RegisterClass(&wc);
 
-	// 初始化COM库
-	CoInitialize(NULL);
-	
-    // 安装钩子
-    HHOOK KeyboardHook = NULL;
-    KeyboardHook = SetWindowsHookExW(
-        WH_KEYBOARD_LL, // 低级键盘钩子
-        // 似乎也能用WH_KEYBOARD，但低级钩子用起来更稳定、简单些
-        LowLevelKeyboardProc, // 传递回调函数地址
-        GetModuleHandle(NULL),
-        0
-    );
-
     // 创建窗口
-    HWND hwnd = CreateWindowEx(
-        0,                              // 可选的窗口风格
-        CLASS_NAME,                     // 窗口类
-        L"Learn to Program Windows",    // 窗口文本
-        WS_OVERLAPPEDWINDOW,            // 窗口风格
+    hwnd = CreateWindowEx(
+        WS_EX_LAYERED | WS_EX_TOPMOST, // 支持透明，设置置顶
+        CLASS_NAME, // 窗口类
+        L"Learn to Program Windows", // 窗口文本
+        WS_POPUP | WS_VISIBLE, // 窗口风格
 		// 大小+位置
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        100, 100,200,200,
         NULL,       // 父窗口   
         NULL,       // 菜单
         hInstance,  // 示例句柄
@@ -65,7 +70,35 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return 0;
     }
 
+    COLORREF crKey = 13217535;
+    SetLayeredWindowAttributes(hwnd, crKey, 0, LWA_COLORKEY);
+
     ShowWindow(hwnd, nCmdShow); //展示窗口
+
+    // 初始化GDI+
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, NULL);
+	// 加载背景图片
+    g_pBackgroundImage = new Gdiplus::Image(L"./resource/background.png");
+
+    // // 创建Windows Media Player实例
+    // HRESULT hr = CoCreateInstance(
+    //     CLSID_WindowsMediaPlayer, NULL, 
+    //     CLSCTX_INPROC_SERVER, IID_IWMPPlayer, 
+    //     (void**)&pPlayer
+    // );
+    // // 获取 controls 接口
+    // hr = pPlayer->get_controls(&pControls);
+
+    // 安装钩子
+    HHOOK KeyboardHook = NULL;
+    KeyboardHook = SetWindowsHookExW(
+        WH_KEYBOARD_LL, // 低级键盘钩子
+        // 似乎也能用WH_KEYBOARD，但低级钩子用起来更稳定、简单些
+        LowLevelKeyboardProc, // 传递回调函数地址
+        GetModuleHandle(NULL),
+        0
+    );
 
     // 消息循环
     MSG msg = { };
@@ -77,11 +110,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     return 0;
 }
 
+// 判断文件是否存在
+bool FileExists(const wchar_t* rawPath){// 接收 C 风格字符串
+    std::wstring_view pathView{ rawPath };// 或者 std::wstring path{ rawPath };
+    return std::filesystem::exists(pathView);// 支持 std::wstring_view/wstring/const wchar_t*
+}
+
 // 消息处理
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
     switch (uMsg){
 		case WM_DESTROY:
             // 资源释放
+            // pControls->Release();
+            // pPlayer->Release();
+            delete g_pBackgroundImage; // 释放背景图片（真的有必要吗🤔）
+            Gdiplus::GdiplusShutdown(g_gdiplusToken); // 关闭GDI库
             CoUninitialize(); // 关闭COM库
         	PostQuitMessage(0);
         return 0;
@@ -89,11 +132,33 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
         case WM_PAINT:{
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hwnd, &ps);
-				// 所有绘图操作发生在这里也就是BeginPaint和EndPaint之间
-				FillRect(hdc, &ps.rcPaint, (HBRUSH) (COLOR_WINDOW+1));
-				EndPaint(hwnd, &ps);
+                Gdiplus::Graphics graphics(hdc);
+
+                // 获取客户区大小
+                RECT clientRect;
+                GetClientRect(hwnd, &clientRect);
+                int windowWidth = clientRect.right - clientRect.left;
+                int windowHeight = clientRect.bottom - clientRect.top;
+
+                // 将图片绘制到整个窗口客户区
+                if (g_pBackgroundImage) {
+                    graphics.DrawImage(g_pBackgroundImage, 0, 0, windowWidth, windowHeight);
+                }
+                EndPaint(hwnd, &ps);
 			}
 			return 0;
+        case WM_SIZE:{
+                // 窗口大小改变时强制重绘
+                InvalidateRect(hwnd, NULL, TRUE);
+                return 0;
+            }
+        case WM_NCHITTEST: {
+            LRESULT hit = DefWindowProc(hwnd, uMsg, wParam, lParam);
+            // 让客户区可拖动
+            if (hit == HTCLIENT) hit = HTCAPTION;
+            return hit;
+        }
+        default :return DefWindowProcW(hwnd,uMsg,wParam,lParam);
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
@@ -104,11 +169,14 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         KBDLLHOOKSTRUCT* keyInfo = (KBDLLHOOKSTRUCT*)lParam;
         // 判断是否为按键按下事件
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-            // 检查特定的虚拟键码，例如 F1
-            if (keyInfo->vkCode == VK_F1) {
-                // PlaySound(TEXT("trigger.wav"), NULL, SND_FILENAME | SND_ASYNC);
-
-            }
+            DWORD vkCode = keyInfo->vkCode;
+            wchar_t szPath[MAX_PATH];
+            swprintf_s(szPath,
+                    _countof(szPath),
+                    L"./resource/audios/%lu.wav",   // 格式串
+                    vkCode);   // 对应的数字
+            if(FileExists(szPath))
+                PlaySoundW(szPath, NULL, SND_FILENAME | SND_ASYNC);
         }
     }
     // 按照规定你需要将事件传递给下一个钩子或系统
