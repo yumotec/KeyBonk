@@ -11,44 +11,66 @@
 #include <wchar.h>
 #include <filesystem>
 #include <string>
+#include "../resource/resources.h"
+#include <winver.h>
 
-// 后期版本会放入类的内容
+// 全局变量
 ULONG_PTR g_gdiplusToken; // GDI+的token
-HWND hwnd;
-Gdiplus::Image* g_pBackgroundImage;
-
+HWND hwnd; // 窗口句柄
+Gdiplus::Image* g_pBackgroundImage; // 背景图片
+bool keyBonkShutdown= false; // 是否静音
+HINSTANCE C_hInstance;
 
 // 各种向前声明
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam); // 消息处理
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam); // 钩子
+
+// 简单功能函数
+
+template<typename T>
+void safeRelease(T** resourcePointer){
+    // 检查是否为空
+    if(*resourcePointer){
+        // 释放资源
+        (*resourcePointer)->Release();
+        // 设置为空
+        resourcePointer = NULL;
+    }
+}
 
 // 主程序
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow){
+    
+    // 保存hInstance到全局
+    C_hInstance = hInstance;
 
     // 初始化COM库
-    CoInitialize(NULL);
+    CoInitializeEx(NULL,
+        COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
+    );
 
     // 注册窗口类
-    const wchar_t CLASS_NAME[]  = L"Sample Window Class";
-    WNDCLASS wc = { };
-    wc.lpfnWndProc   = WindowProc; // 指定WindowProc函数
-    wc.hInstance     = hInstance;
+    const wchar_t CLASS_NAME[]  = L"KeyBonk主窗口";
+    WNDCLASS wc = { }; // 用0初始化整个WindowClass
+    wc.lpfnWndProc = WindowProc; // 指定WindowProc函数
+    wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-    RegisterClass(&wc);
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    RegisterClass(&wc); // 注册
 
     // 创建窗口
     hwnd = CreateWindowEx(
         WS_EX_LAYERED | WS_EX_TOPMOST, // 支持透明，设置置顶
         CLASS_NAME, // 窗口类
-        L"Learn to Program Windows", // 窗口文本
-        WS_POPUP | WS_VISIBLE, // 窗口风格
+        L"KeyBonk主窗口", // 窗口文本
+        WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN, // 窗口风格
 		// 大小+位置
         100, 100,200,200,
         NULL,       // 父窗口   
         NULL,       // 菜单
         hInstance,  // 示例句柄
         NULL        // 附带的软件数据
-		);
+	);
 
     // 创建失败则提示并返回，结束运行
     if (hwnd == NULL){
@@ -100,14 +122,31 @@ bool FileExists(const wchar_t* rawPath){// 接收 C 风格字符串
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
     switch (uMsg){
 		case WM_DESTROY:
-            // 资源释放
-            // pControls->Release();
-            // pPlayer->Release();
-            delete g_pBackgroundImage; // 释放背景图片（真的有必要吗🤔）
+            if (g_pBackgroundImage){
+                delete g_pBackgroundImage; // 释放背景图片（真的有必要吗🤔）
+                g_pBackgroundImage = NULL;
+            }
             Gdiplus::GdiplusShutdown(g_gdiplusToken); // 关闭GDI库
             CoUninitialize(); // 关闭COM库
         	PostQuitMessage(0);
         return 0;
+
+        case WM_RBUTTONDOWN:
+        {
+            // 显示右键菜单
+            HMENU hMenu = LoadMenu(C_hInstance, MAKEINTRESOURCE(IDR_CONTEXT_MENU));
+            HMENU hSubMenu = GetSubMenu(hMenu, 0);
+            
+            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+            ClientToScreen(hwnd, &pt);
+            
+            // 显示右键菜单
+            TrackPopupMenu(hSubMenu, 
+                          TPM_RIGHTBUTTON | TPM_LEFTALIGN,
+                          pt.x, pt.y, 0, hwnd, NULL);
+            DestroyMenu(hMenu);
+            return 0;
+        }
 
         case WM_PAINT:{
                 PAINTSTRUCT ps;
@@ -135,10 +174,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam){
         case WM_NCHITTEST: {
             LRESULT hit = DefWindowProc(hwnd, uMsg, wParam, lParam);
             // 让客户区可拖动
-            if (hit == HTCLIENT) hit = HTCAPTION;
+            if (hit == HTCLIENT && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) hit = HTCAPTION;
             return hit;
         }
-        default :return DefWindowProcW(hwnd,uMsg,wParam,lParam);
+        case WM_COMMAND:
+            switch (LOWORD(wParam)){
+                case IDM_WINDOW_PENETRATE:
+                    break;
+                case IDM_MUTE:
+                    keyBonkShutdown = true;
+                    break;
+            }
+            return 0;
+        default :
+            return DefWindowProcW(hwnd,uMsg,wParam,lParam);
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
